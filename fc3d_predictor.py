@@ -713,32 +713,32 @@ def predict(
         trans_scored.append((cand, score, explain))
         all_scored.append((cand, score, explain))
 
-    # === 强制保留：每种信号源至少1个，确保多维度覆盖 ===
-    # 2个马尔可夫 + 1个遗漏回补 + 1个跨期转移 + 1个MMR自由选择
+    # === 强制保留：计算前先排序 ===
+    markov_scored.sort(key=lambda x: -x[1])
+    gap_scored.sort(key=lambda x: -x[1])
+    trans_scored.sort(key=lambda x: -x[1])
+
     forced_indices: List[int] = []
-    forced_sets: List[set] = []
+    forced_sets: List[frozenset] = []  # 用frozenset追踪已选数字集
 
     def _force_add(source_list, count=1):
-        nonlocal forced_indices, forced_sets
-        for item in source_list[:count]:
+        added = 0
+        for item in source_list:
+            if added >= count:
+                break
+            cand_set = frozenset(item[0])
+            if cand_set in forced_sets:
+                continue
             for i, (cand, _, _) in enumerate(all_scored):
                 if cand == item[0] and i not in forced_indices:
                     forced_indices.append(i)
-                    forced_sets.append(set(cand))
+                    forced_sets.append(cand_set)
+                    added += 1
                     break
 
     _force_add(markov_scored, 2)
     _force_add(gap_scored, 1)
     _force_add(trans_scored, 1)
-    markov_scored.sort(key=lambda x: -x[1])
-    forced_indices: List[int] = []
-    forced_sets: List[set] = []
-    for mc in markov_scored[:2]:
-        for i, (cand, _, _) in enumerate(all_scored):
-            if cand == mc[0]:
-                forced_indices.append(i)
-                forced_sets.append(set(cand))
-                break
 
     cand_list = [s[0] for s in all_scored]
     score_list = [s[1] for s in all_scored]
