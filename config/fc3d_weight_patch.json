@@ -1,0 +1,7 @@
+{
+  "expert_weights": {
+    "hot": 2.0,
+    "cold": 0.1,
+    "random": 0.0
+  }
+}

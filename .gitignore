@@ -1,0 +1,25 @@
+# 福彩3D预测器 - Git 忽略文件
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 环境
+.env
+.env.local
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 覆盖父仓库中对项目级 CLAUDE.md 的忽略
+!CLAUDE.md
