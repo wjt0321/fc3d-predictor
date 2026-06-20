@@ -234,6 +234,25 @@ def random_expert(_records: List[FC3DRecord]) -> Tuple[List[Dict[int, float]], D
     return [base.copy() for _ in range(3)], {"type": "random"}
 
 
+def adjacent_expert(records: List[FC3DRecord]) -> Tuple[List[Dict[int, float]], Dict[str, float]]:
+    """邻号：最近5期各位置数字的±1邻号获得加权加分，捕获数字漂移"""
+    if not records:
+        return [{d: 0.5 for d in ALL_DIGITS} for _ in range(3)], {"type": "adjacent"}
+    pos_scores = []
+    # 多期邻号叠加，越近权重越高
+    recency_weights = [5.0, 4.0, 3.0, 2.0, 1.0]
+    window = min(len(records), len(recency_weights))
+    for pos in range(3):
+        raw = {d: 0.0 for d in ALL_DIGITS}
+        for w_idx in range(window):
+            d = records[w_idx].digits[pos]
+            for n in [(d - 1) % 10, (d + 1) % 10]:
+                raw[n] += recency_weights[w_idx]
+        pos_scores.append(normalize_scores(raw))
+    recent_digits = [records[0].digits[pos] for pos in range(3)]
+    return pos_scores, {"type": "adjacent", "recent": recent_digits}
+
+
 EXPERTS = {
     "hot": hot_expert,
     "cold": cold_expert,
@@ -242,6 +261,7 @@ EXPERTS = {
     "sum": sum_expert,
     "balanced": balanced_expert,
     "random": random_expert,
+    "adjacent": adjacent_expert,
 }
 
 DEFAULT_EXPERT_WEIGHTS = {
@@ -251,7 +271,8 @@ DEFAULT_EXPERT_WEIGHTS = {
     "cycle": 0.8,
     "sum": 0.9,
     "balanced": 0.8,
-    "random": 0.3,
+    "random": 1.0,
+    "adjacent": 1.0,
 }
 
 
@@ -298,6 +319,44 @@ def generate_candidates(pos_scores: List[Dict[int, float]], top_k_per_pos: int =
     return candidates
 
 
+def mmr_select(
+    candidates: List[Tuple[int, int, int]],
+    scores: List[float],
+    num: int = 5,
+    lambda_param: float = 0.65,
+) -> List[int]:
+    """用 MMR (Maximal Marginal Relevance) 从候选池中选出既高分又多样的候选。
+
+    lambda_param: 相关性权重（0~1），越大越偏向高分，越小越偏向多样性。
+    """
+    selected_indices: List[int] = []
+    selected_sets: List[set] = []
+    remaining = list(range(len(candidates)))
+
+    for _ in range(min(num, len(candidates))):
+        best_idx = -1
+        best_mmr = float("-inf")
+        for idx in remaining:
+            cand_set = set(candidates[idx])
+            max_sim = 0.0
+            for ss in selected_sets:
+                inter = len(cand_set & ss)
+                union = len(cand_set | ss)
+                sim = inter / union if union > 0 else 1.0
+                if sim > max_sim:
+                    max_sim = sim
+            mmr = lambda_param * scores[idx] - (1.0 - lambda_param) * max_sim
+            if mmr > best_mmr:
+                best_mmr = mmr
+                best_idx = idx
+        if best_idx >= 0:
+            selected_indices.append(best_idx)
+            selected_sets.append(set(candidates[best_idx]))
+            remaining.remove(best_idx)
+
+    return selected_indices
+
+
 def evaluate_candidate(
     cand: Tuple[int, int, int],
     pos_scores: List[Dict[int, float]],
@@ -306,7 +365,7 @@ def evaluate_candidate(
 ) -> Tuple[float, Dict[str, float]]:
     digits = list(cand)
     score = 0.0
-    explain = {}
+    explain: Dict[str, float] = {}
     for i, d in enumerate(digits):
         score += pos_scores[i][d]
     explain["position"] = score
@@ -322,20 +381,50 @@ def evaluate_candidate(
         explain["sum"] = bonus
         score += bonus
 
-    # 跨度奖励：常见跨度 3-7 略加分
+    # 跨度趋势：基于近期跨度序列做均值回归或突破判断
     span = max(digits) - min(digits)
     span_bonus = 0.0
-    if 3 <= span <= 7:
-        span_bonus = 0.5
+    if records and len(records) >= 10:
+        recent_spans = [r.span for r in records[:10]]
+        avg_span = sum(recent_spans) / len(recent_spans)
+        span_dist = abs(span - avg_span)
+        if 1.5 <= span_dist <= 3.5:
+            span_bonus = 0.4  # 适度偏离近期均值，有均值回归空间
+        elif span_dist > 3.5:
+            span_bonus = 0.6  # 大幅偏离，可能趋势突破
+        else:
+            span_bonus = 0.15  # 过于接近均值，信号弱
+    else:
+        span_bonus = 0.5 if 3 <= span <= 7 else 0.0
     explain["span"] = span_bonus
     score += span_bonus
+
+    # 形态感知：组六/组三/豹子周期判断
+    unique = len(set(digits))  # 3=组六, 2=组三, 1=豹子
+    pattern_bonus = 0.0
+    if records and len(records) >= 20:
+        recent_unique = [len(set(r.digits)) for r in records[:20]]
+        zuliu_count = recent_unique.count(3)
+        zusan_count = recent_unique.count(2)
+        zuliu_ratio = zuliu_count / 20
+        zusan_ratio = zusan_count / 20
+        if unique == 3 and zuliu_ratio < 0.65:  # 组六不足，加分
+            pattern_bonus = (0.72 - zuliu_ratio) * 2.5
+        elif unique == 2 and zusan_ratio < 0.22:  # 组三不足，加分
+            pattern_bonus = (0.27 - zusan_ratio) * 2.5
+        elif unique == 1:  # 豹子极少出现，不鼓励
+            pattern_bonus = -0.5
+    explain["pattern"] = pattern_bonus
+    score += pattern_bonus
 
     # 避免全奇/全偶/全大/全小过度集中
     balance_penalty = 0.0
     odd_count = sum(1 for d in digits if d % 2 == 1)
     big_count = sum(1 for d in digits if d >= 5)
-    if odd_count in (0, 3) or big_count in (0, 3):
-        balance_penalty = -0.3
+    if odd_count in (0, 3):
+        balance_penalty -= 0.2
+    if big_count in (0, 3):
+        balance_penalty -= 0.2
     explain["balance"] = balance_penalty
     score += balance_penalty
 
@@ -343,7 +432,7 @@ def evaluate_candidate(
     if records:
         last = records[0].digits
         same = sum(1 for a, b in zip(digits, last) if a == b)
-        dup_penalty = -0.2 * same
+        dup_penalty = -0.25 * same
         explain["repeat"] = dup_penalty
         score += dup_penalty
 
@@ -361,7 +450,7 @@ def predict(
     if len(records) < 30:
         print(f"[警告] 历史数据仅 {len(records)} 条，建议至少 50 条以上再参考预测结果", file=sys.stderr)
 
-    pos_scores, expert_infos = aggregate_scores(records, weights)
+    weights = weights or DEFAULT_EXPERT_WEIGHTS.copy()
 
     # 确定和值目标范围
     sums = [r.sum_value for r in records[:120]]
@@ -372,32 +461,59 @@ def predict(
     else:
         sum_target = (10.0, 17.0)
 
-    candidates = generate_candidates(pos_scores, top_k_per_pos=5)
-    scored = []
-    for cand in candidates:
-        score, explain = evaluate_candidate(cand, pos_scores, records, sum_target)
-        scored.append((cand, score, explain))
+    # === 每位专家独立产出候选，保留各自独特视角 ===
+    all_scored: List[Tuple[Tuple[int, int, int], float, Dict[str, float]]] = []
+    seen_candidates: set = set()
 
-    scored.sort(key=lambda x: -x[1])
-    seen = set()
-    results = []
-    for cand, score, explain in scored:
-        key = tuple(cand)
-        if key in seen:
+    for name, fn in EXPERTS.items():
+        w = weights.get(name, 0.0)
+        if w <= 0:
             continue
-        seen.add(key)
-        results.append(
-            PredictionResult(
-                number="".join(str(d) for d in cand),
-                digits=list(cand),
-                score=score,
-                sum_value=sum(cand),
-                span=max(cand) - min(cand),
-                explain=explain,
+        expert_scores, info = fn(records)
+        expert_cands = generate_candidates(expert_scores, top_k_per_pos=4)
+        for cand in expert_cands:
+            key = tuple(cand)
+            if key in seen_candidates:
+                continue
+            seen_candidates.add(key)
+            score, explain = evaluate_candidate(cand, expert_scores, records, sum_target)
+            all_scored.append((cand, score * w, explain))
+
+    # 也加入融合视角的候选（聚合所有专家打分）
+    pos_scores, expert_infos = aggregate_scores(records, weights)
+    agg_cands = generate_candidates(pos_scores, top_k_per_pos=6)
+    for cand in agg_cands:
+        key = tuple(cand)
+        if key in seen_candidates:
+            continue
+        seen_candidates.add(key)
+        score, explain = evaluate_candidate(cand, pos_scores, records, sum_target)
+        all_scored.append((cand, score, explain))
+
+    cand_list = [s[0] for s in all_scored]
+    score_list = [s[1] for s in all_scored]
+
+    # MMR 多样性选择，λ 自适应回退直到覆盖≥7个不同数字
+    results = []
+    for lamb in [0.5, 0.4, 0.3, 0.2]:
+        selected = mmr_select(cand_list, score_list, num=num, lambda_param=lamb)
+        results = []
+        for idx in selected:
+            cand, score, explain = all_scored[idx]
+            results.append(
+                PredictionResult(
+                    number="".join(str(d) for d in cand),
+                    digits=list(cand),
+                    score=score,
+                    sum_value=sum(cand),
+                    span=max(cand) - min(cand),
+                    explain=explain,
+                )
             )
-        )
-        if len(results) >= num:
+        digits_covered = len(set(d for r in results for d in r.digits))
+        if digits_covered >= 7:
             break
+
     return results, expert_infos, sum_target
 
 

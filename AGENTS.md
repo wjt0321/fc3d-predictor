@@ -48,10 +48,11 @@
 - **数据模型**：`FC3DRecord`（单期记录）、`PredictionResult`（预测结果）
 - **数据加载/保存**：`load_data`、`save_data`
 - **统计工具**：`digit_position_frequency`、`digit_overall_frequency`、`missing_gaps`、`normalize_scores`
-- **专家实现**：`hot_expert`、`cold_expert`、`missing_expert`、`cycle_expert`、`sum_expert`、`balanced_expert`、`random_expert`
+- **专家实现**：`hot_expert`、`cold_expert`、`missing_expert`、`cycle_expert`、`sum_expert`、`balanced_expert`、`random_expert`、`adjacent_expert`
 - **专家注册表**：`EXPERTS` 字典、`DEFAULT_EXPERT_WEIGHTS`
 - **融合与候选生成**：`aggregate_scores`、`generate_candidates`
-- **候选评估**：`evaluate_candidate`（考虑位置分、和值、跨度、平衡、重复惩罚）
+- **多样性选择**：`mmr_select`（MMR 自适应 λ，确保≥7个不同数字覆盖）
+- **候选评估**：`evaluate_candidate`（考虑位置分、和值、跨度趋势、形态感知、平衡、重复惩罚）
 - **主预测逻辑**：`predict`
 - **输出与归档**：`format_output`、`archive_prediction`
 - **回测**：`backtest`（walk-forward，统计 `avg_digit_hits`、`exact_match_rate`、`group_match_rate`）

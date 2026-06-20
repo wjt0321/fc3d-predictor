@@ -51,6 +51,7 @@ python fc3d_predictor.py --num 5
 - `sum`：和值趋势
 - `balanced`：奇偶/大小平衡
 - `random`：随机扰动
+- `adjacent`：邻号漂移
 
 ## 参考
 

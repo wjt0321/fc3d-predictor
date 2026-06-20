@@ -48,7 +48,7 @@ fc3d_predictor.py
 
 ### 专家系统的统一接口
 
-7 位专家（`EXPERTS` 字典注册）全部遵循签名：
+8 位专家（`EXPERTS` 字典注册）全部遵循签名：
 
 ```python
 def xxx_expert(records: List[FC3DRecord]) -> Tuple[List[Dict[int, float]], Dict[str, float]]
@@ -61,10 +61,11 @@ def xxx_expert(records: List[FC3DRecord]) -> Tuple[List[Dict[int, float]], Dict[
 
 ### 预测流水线
 
-1. **aggregate_scores()**: 遍历 `EXPERTS`，每位专家对百/十/个位独立打分，按 `weights` 加权求和后归一化
-2. **generate_candidates()**: 每位取 top 5 数字做笛卡尔积 → 最多 125 个候选
-3. **evaluate_candidate()**: 位置分 + 和值奖励 + 跨度奖励 + 平衡惩罚 + 重复惩罚 → 综合分
-4. 按综合分降序排列、去重，取 top N
+1. **独立专家候选生成**：每位权重>0的专家独立按位打分，各自产出 top-4 候选人（笛卡尔积 ≈ 64个/专家）
+2. **聚合候选补充**：`aggregate_scores()` 融合所有专家 → top-6 候选人（216个）
+3. **合并去重**：所有候选合并到统一池
+4. **MMR 多样性选择**：用 Maximal Marginal Relevance（λ 自适应 0.5→0.2）从池中选 5 注，确保覆盖≥7个不同数字
+5. **evaluate_candidate()** 评分维度：位置分 + 和值 + 跨度趋势 + 形态感知(组三/组六) + 平衡 + 重复惩罚
 
 ### 回测机制 (walk-forward)
 
