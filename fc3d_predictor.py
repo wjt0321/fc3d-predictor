@@ -319,6 +319,49 @@ def generate_candidates(pos_scores: List[Dict[int, float]], top_k_per_pos: int =
     return candidates
 
 
+def generate_markov_candidates(records: List[FC3DRecord], top_n: int = 80) -> List[Tuple[int, int, int]]:
+    """用马尔可夫链式法则 P(d1,d2,d3)=P(d1)×P(d2|d1)×P(d3|d1,d2) 生成最可能的完整3位数候选。
+
+    使用 Laplace 平滑处理稀疏组合，直接输出完整的3位数而非按位拼凑。
+    """
+    if len(records) < 20:
+        return []
+
+    p_d1 = Counter()                          # P(d1)
+    p_d2_given_d1: Dict[int, Counter] = defaultdict(Counter)   # P(d2 | d1)
+    p_d3_given_d1d2: Dict[Tuple[int, int], Counter] = defaultdict(Counter)  # P(d3 | d1, d2)
+
+    for r in records:
+        d1, d2, d3 = r.digits
+        p_d1[d1] += 1
+        p_d2_given_d1[d1][d2] += 1
+        p_d3_given_d1d2[(d1, d2)][d3] += 1
+
+    total = len(records)
+    alpha = 0.3  # Laplace 平滑系数
+
+    scored: List[Tuple[Tuple[int, int, int], float]] = []
+    for d1 in range(10):
+        p1 = (p_d1.get(d1, 0) + alpha) / (total + 10 * alpha)
+        d1_total = sum(p_d2_given_d1[d1].values())
+        for d2 in range(10):
+            # P(d2 | d1) with smoothing
+            p2 = (p_d2_given_d1[d1].get(d2, 0) + alpha) / (d1_total + 10 * alpha) if d1_total > 0 else 0.1
+            d12_total = sum(p_d3_given_d1d2[(d1, d2)].values())
+            for d3 in range(10):
+                # P(d3 | d1, d2) with smoothing; backoff to uniform if unseen
+                if d12_total > 0:
+                    p3 = (p_d3_given_d1d2[(d1, d2)].get(d3, 0) + alpha) / (d12_total + 10 * alpha)
+                else:
+                    # 回退到 P(d3) 的边际概率
+                    d3_total = sum(1 for r in records if r.digits[2] == d3)
+                    p3 = (d3_total + alpha) / (total + 10 * alpha)
+                scored.append(((d1, d2, d3), p1 * p2 * p3))
+
+    scored.sort(key=lambda x: -x[1])
+    return [c for c, _ in scored[:top_n]]
+
+
 def mmr_select(
     candidates: List[Tuple[int, int, int]],
     scores: List[float],
@@ -470,7 +513,7 @@ def predict(
         if w <= 0:
             continue
         expert_scores, info = fn(records)
-        expert_cands = generate_candidates(expert_scores, top_k_per_pos=4)
+        expert_cands = generate_candidates(expert_scores, top_k_per_pos=3)
         for cand in expert_cands:
             key = tuple(cand)
             if key in seen_candidates:
@@ -490,15 +533,106 @@ def predict(
         score, explain = evaluate_candidate(cand, pos_scores, records, sum_target)
         all_scored.append((cand, score, explain))
 
+    # === 马尔可夫链式法则候选：三位联合概率 P(d1,d2,d3) ===
+    markov_cands = generate_markov_candidates(records, top_n=300)
+    markov_scored: List[Tuple[Tuple[int, int, int], float, Dict[str, float]]] = []
+    for cand in markov_cands:
+        key = tuple(cand)
+        if key in seen_candidates:
+            continue
+        seen_candidates.add(key)
+        score, explain = evaluate_candidate(cand, pos_scores, records, sum_target)
+        markov_scored.append((cand, score, explain))
+        all_scored.append((cand, score, explain))
+
+    # === 历史热号：最近N期中出现过的完整3位数 ===
+    # 最近200期中实际开出过的号码，按出现次数加权
+    recent_hot: Counter = Counter()
+    for r in records[:200]:
+        recent_hot[tuple(r.digits)] += 1
+    hot_candidates = recent_hot.most_common(80)
+    for cand_tuple, freq in hot_candidates:
+        if freq < 2:
+            continue  # 只保留至少出现2次的热号
+        key = cand_tuple
+        if key in seen_candidates:
+            continue
+        seen_candidates.add(key)
+        score, explain = evaluate_candidate(cand_tuple, pos_scores, records, sum_target)
+        all_scored.append((cand_tuple, score, explain))
+
+    # === 历史相似期匹配：找与最近5期最相似的历史片段 ===
+    if len(records) >= 15:
+        recent_5 = records[:5]
+        # 特征：每期数字集合 + 和值
+        def seq_similarity(hist_start: int) -> float:
+            sim = 0.0
+            for offset in range(5):
+                if hist_start + offset >= len(records):
+                    break
+                r_hist = records[hist_start + offset]
+                r_recent = recent_5[min(offset, len(recent_5) - 1)]
+                # 数字重叠 Jaccard
+                set_h = set(r_hist.digits)
+                set_r = set(r_recent.digits)
+                inter = len(set_h & set_r)
+                union = len(set_h | set_r)
+                jaccard = inter / union if union > 0 else 0
+                # 和值接近度
+                sum_dist = abs(r_hist.sum_value - r_recent.sum_value) / 27.0
+                sim += jaccard * 0.6 + (1.0 - sum_dist) * 0.4
+            return sim
+
+        sim_scores = []
+        for start in range(1, len(records) - 6):
+            sim = seq_similarity(start)
+            sim_scores.append((start, sim))
+        sim_scores.sort(key=lambda x: -x[1])
+
+        # 取top-3相似片段的下一个开奖号
+        for start, sim in sim_scores[:3]:
+            if sim < 1.5:  # 相似度过滤
+                continue
+            next_draw = records[start - 1] if start > 0 else None
+            if next_draw is None:
+                continue
+            cand_tuple = tuple(next_draw.digits)
+            if cand_tuple in seen_candidates:
+                continue
+            seen_candidates.add(cand_tuple)
+            score, explain = evaluate_candidate(cand_tuple, pos_scores, records, sum_target)
+            all_scored.append((cand_tuple, score, explain))
+
+    # 强制保留 top-2 马尔可夫候选作为预测的"骨架"，其余 MMR 选择
+    markov_scored.sort(key=lambda x: -x[1])
+    forced_indices: List[int] = []
+    forced_sets: List[set] = []
+    for mc in markov_scored[:2]:
+        for i, (cand, _, _) in enumerate(all_scored):
+            if cand == mc[0]:
+                forced_indices.append(i)
+                forced_sets.append(set(cand))
+                break
+
     cand_list = [s[0] for s in all_scored]
     score_list = [s[1] for s in all_scored]
 
-    # MMR 多样性选择，λ 自适应回退直到覆盖≥7个不同数字
+    # MMR 多样性选择，λ 自适应回退，目标覆盖≥9个数字
+    # 强制包含 top-2 马尔可夫候选
+    remaining_slots = num - len(forced_indices)
     results = []
-    for lamb in [0.5, 0.4, 0.3, 0.2]:
-        selected = mmr_select(cand_list, score_list, num=num, lambda_param=lamb)
+    selected_indices: List[int] = list(forced_indices)
+
+    # 先从候选池中移除已强制保留的
+    remaining_pool = [i for i in range(len(cand_list)) if i not in forced_indices]
+    remaining_cands = [cand_list[i] for i in remaining_pool]
+    remaining_scores = [score_list[i] for i in remaining_pool]
+
+    for lamb in [0.45, 0.35, 0.25, 0.15, 0.05]:
+        extra_indices = mmr_select(remaining_cands, remaining_scores, num=remaining_slots, lambda_param=lamb)
+        selected_indices = forced_indices + [remaining_pool[i] for i in extra_indices]
         results = []
-        for idx in selected:
+        for idx in selected_indices:
             cand, score, explain = all_scored[idx]
             results.append(
                 PredictionResult(
@@ -510,9 +644,56 @@ def predict(
                     explain=explain,
                 )
             )
-        digits_covered = len(set(d for r in results for d in r.digits))
-        if digits_covered >= 7:
+        digits_covered = set(d for r in results for d in r.digits)
+        if len(digits_covered) >= 9:
             break
+
+    # 强制补齐：如果仍未覆盖全部10个数字，从聚合视角补充缺失数字的候选
+    all_digits_set = set(range(10))
+    missing = all_digits_set - set(d for r in results for d in r.digits)
+    if missing:
+        # 为遗漏数字现场生成候选：放入最高分位置，其余位置选高分数字
+        extra_cands = []
+        for miss_d in missing:
+            best_pos = max(range(3), key=lambda p: pos_scores[p].get(miss_d, 0))
+            other_digits = []
+            for p in range(3):
+                if p != best_pos:
+                    top_d = max((d for d in ALL_DIGITS if d != miss_d),
+                                key=lambda d: pos_scores[p].get(d, 0))
+                    other_digits.append(top_d)
+            cand = [0, 0, 0]
+            cand[best_pos] = miss_d
+            other_idx = 0
+            for p in range(3):
+                if p != best_pos:
+                    cand[p] = other_digits[other_idx]
+                    other_idx += 1
+            extra_cands.append(tuple(cand))
+        # 将额外候选加入池中
+        for cand in extra_cands:
+            if tuple(cand) not in seen_candidates:
+                seen_candidates.add(tuple(cand))
+                score, explain = evaluate_candidate(cand, pos_scores, records, sum_target)
+                all_scored.append((cand, score, explain))
+                cand_list.append(cand)
+                score_list.append(score)
+
+        # 重新用极低λ做MMR，优先覆盖所有数字
+        selected_indices = mmr_select(cand_list, score_list, num=num, lambda_param=0.05)
+        results = []
+        for idx in selected_indices:
+            cand, score, explain = all_scored[idx]
+            results.append(
+                PredictionResult(
+                    number="".join(str(d) for d in cand),
+                    digits=list(cand),
+                    score=score,
+                    sum_value=sum(cand),
+                    span=max(cand) - min(cand),
+                    explain=explain,
+                )
+            )
 
     return results, expert_infos, sum_target
 
