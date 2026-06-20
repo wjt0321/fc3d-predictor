@@ -328,7 +328,7 @@ def generate_markov_candidates(records: List[FC3DRecord], top_n: int = 300) -> L
     if len(records) < 20:
         return []
 
-    decay = 0.015  # 衰减系数，约46期后半衰
+    decay = 0.003  # 衰减系数，约231期后半衰，适配大数据集
     p_d1: Dict[int, float] = defaultdict(float)
     p_d2_given_d1: Dict[int, Dict[int, float]] = defaultdict(lambda: defaultdict(float))
     p_d3_given_d1d2: Dict[Tuple[int, int], Dict[int, float]] = defaultdict(lambda: defaultdict(float))
@@ -620,7 +620,7 @@ def predict(
         all_scored.append((cand, score, explain))
 
     # === 马尔可夫链式法则候选：三位联合概率 P(d1,d2,d3) ===
-    markov_cands = generate_markov_candidates(records, top_n=300)
+    markov_cands = generate_markov_candidates(records, top_n=500)
     markov_scored: List[Tuple[Tuple[int, int, int], float, Dict[str, float]]] = []
     for cand in markov_cands:
         key = tuple(cand)
@@ -632,11 +632,11 @@ def predict(
         all_scored.append((cand, score, explain))
 
     # === 历史热号：最近N期中出现过的完整3位数 ===
-    # 最近200期中实际开出过的号码，按出现次数加权
+    # 最近500期中实际开出过的号码，按出现次数加权
     recent_hot: Counter = Counter()
-    for r in records[:200]:
+    for r in records[:500]:
         recent_hot[tuple(r.digits)] += 1
-    hot_candidates = recent_hot.most_common(80)
+    hot_candidates = recent_hot.most_common(100)
     for cand_tuple, freq in hot_candidates:
         if freq < 2:
             continue  # 只保留至少出现2次的热号
@@ -690,7 +690,7 @@ def predict(
             all_scored.append((cand_tuple, score, explain))
 
     # === 遗漏回补候选：冷号回补信号 ===
-    gap_cands = generate_gap_candidates(records, top_n=50)
+    gap_cands = generate_gap_candidates(records, top_n=80)
     gap_scored: List[Tuple[Tuple[int, int, int], float, Dict[str, float]]] = []
     for cand in gap_cands:
         key = cand
@@ -702,7 +702,7 @@ def predict(
         all_scored.append((cand, score, explain))
 
     # === 跨期转移候选：上期号码的跟随规律 ===
-    trans_cands = generate_transition_candidates(records, top_n=15)
+    trans_cands = generate_transition_candidates(records, top_n=25)
     trans_scored: List[Tuple[Tuple[int, int, int], float, Dict[str, float]]] = []
     for cand in trans_cands:
         key = cand
@@ -878,7 +878,7 @@ def backtest(records: List[FC3DRecord], cycles: int = 30, num: int = 5, seed: Op
     cycles = min(cycles, len(records) - 1)
     metrics = []
     for i in range(cycles):
-        history = records[i + 1 : i + 201]  # 最多200期历史，平衡统计功效与时效性
+        history = records[i + 1 : i + 501]  # 最多500期历史，衰减系数已调小以利用长历史
         actual = records[i]
         if len(history) < 20:
             continue
