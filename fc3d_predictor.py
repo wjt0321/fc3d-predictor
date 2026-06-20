@@ -319,47 +319,133 @@ def generate_candidates(pos_scores: List[Dict[int, float]], top_k_per_pos: int =
     return candidates
 
 
-def generate_markov_candidates(records: List[FC3DRecord], top_n: int = 80) -> List[Tuple[int, int, int]]:
-    """用马尔可夫链式法则 P(d1,d2,d3)=P(d1)×P(d2|d1)×P(d3|d1,d2) 生成最可能的完整3位数候选。
+def generate_markov_candidates(records: List[FC3DRecord], top_n: int = 300) -> List[Tuple[int, int, int]]:
+    """用马尔可夫链式法则生成最可能的完整3位数候选。
 
-    使用 Laplace 平滑处理稀疏组合，直接输出完整的3位数而非按位拼凑。
+    - 指数衰减时间权重：越近期记录权重越高
+    - Backoff 插值平滑：P(d3|d1,d2) = 0.6×P_obs + 0.3×P(d3|d2) + 0.1×P(d3)
     """
     if len(records) < 20:
         return []
 
-    p_d1 = Counter()                          # P(d1)
-    p_d2_given_d1: Dict[int, Counter] = defaultdict(Counter)   # P(d2 | d1)
-    p_d3_given_d1d2: Dict[Tuple[int, int], Counter] = defaultdict(Counter)  # P(d3 | d1, d2)
+    decay = 0.015  # 衰减系数，约46期后半衰
+    p_d1: Dict[int, float] = defaultdict(float)
+    p_d2_given_d1: Dict[int, Dict[int, float]] = defaultdict(lambda: defaultdict(float))
+    p_d3_given_d1d2: Dict[Tuple[int, int], Dict[int, float]] = defaultdict(lambda: defaultdict(float))
+    p_d3: Dict[int, float] = defaultdict(float)        # P(d3) 边际
+    p_d3_given_d2: Dict[int, Dict[int, float]] = defaultdict(lambda: defaultdict(float))  # P(d3|d2)
 
-    for r in records:
+    total_weight = 0.0
+    for i, r in enumerate(records):
+        w = math.exp(-decay * i)
+        total_weight += w
         d1, d2, d3 = r.digits
-        p_d1[d1] += 1
-        p_d2_given_d1[d1][d2] += 1
-        p_d3_given_d1d2[(d1, d2)][d3] += 1
+        p_d1[d1] += w
+        p_d2_given_d1[d1][d2] += w
+        p_d3_given_d1d2[(d1, d2)][d3] += w
+        p_d3[d3] += w
+        p_d3_given_d2[d2][d3] += w
 
-    total = len(records)
-    alpha = 0.3  # Laplace 平滑系数
+    # Backoff 插值权重
+    L3, L2, L1 = 0.6, 0.3, 0.1  # P(d3|d1,d2) : P(d3|d2) : P(d3)
 
     scored: List[Tuple[Tuple[int, int, int], float]] = []
     for d1 in range(10):
-        p1 = (p_d1.get(d1, 0) + alpha) / (total + 10 * alpha)
-        d1_total = sum(p_d2_given_d1[d1].values())
+        p1 = p_d1.get(d1, 0.001) / max(total_weight, 1.0)
+        d1_weight = sum(p_d2_given_d1[d1].values())
         for d2 in range(10):
-            # P(d2 | d1) with smoothing
-            p2 = (p_d2_given_d1[d1].get(d2, 0) + alpha) / (d1_total + 10 * alpha) if d1_total > 0 else 0.1
-            d12_total = sum(p_d3_given_d1d2[(d1, d2)].values())
+            p2 = p_d2_given_d1[d1].get(d2, 0.001) / max(d1_weight, 1.0) if d1_weight > 0 else 0.1
+            d12_weight = sum(p_d3_given_d1d2[(d1, d2)].values())
+            d2_weight = sum(p_d3_given_d2[d2].values())
             for d3 in range(10):
-                # P(d3 | d1, d2) with smoothing; backoff to uniform if unseen
-                if d12_total > 0:
-                    p3 = (p_d3_given_d1d2[(d1, d2)].get(d3, 0) + alpha) / (d12_total + 10 * alpha)
+                # Backoff 插值
+                if d12_weight > 0:
+                    p3_obs = p_d3_given_d1d2[(d1, d2)].get(d3, 0.0) / d12_weight
                 else:
-                    # 回退到 P(d3) 的边际概率
-                    d3_total = sum(1 for r in records if r.digits[2] == d3)
-                    p3 = (d3_total + alpha) / (total + 10 * alpha)
-                scored.append(((d1, d2, d3), p1 * p2 * p3))
+                    p3_obs = 0.0
+                if d2_weight > 0:
+                    p3_d2 = p_d3_given_d2[d2].get(d3, 0.0) / d2_weight
+                else:
+                    p3_d2 = 0.0
+                p3_marginal = p_d3.get(d3, 0.001) / max(total_weight, 1.0)
+                p3 = L3 * p3_obs + L2 * p3_d2 + L1 * p3_marginal
+                scored.append(((d1, d2, d3), p1 * p2 * max(p3, 0.0001)))
 
     scored.sort(key=lambda x: -x[1])
     return [c for c, _ in scored[:top_n]]
+
+
+def generate_gap_candidates(records: List[FC3DRecord], top_n: int = 30) -> List[Tuple[int, int, int]]:
+    """遗漏回补：统计历史上出现过的每个完整3位数的遗漏间隔，
+    找到 current_gap/max_gap > 0.6 的号码，这些号码更可能近期回补。
+    """
+    if len(records) < 30:
+        return []
+
+    # 记录每个号码的出现位置（从最新算，0=最新一期）
+    last_seen: Dict[Tuple[int, int, int], int] = {}
+    intervals: Dict[Tuple[int, int, int], List[int]] = defaultdict(list)
+    prev_seen: Dict[Tuple[int, int, int], int] = {}
+
+    for i, r in enumerate(records):
+        num = tuple(r.digits)
+        if num not in last_seen:
+            last_seen[num] = i
+        if num in prev_seen:
+            intervals[num].append(i - prev_seen[num])
+        prev_seen[num] = i
+
+    candidates = []
+    for num, gap in last_seen.items():
+        if gap < 10:  # 最近10期内出现过的排除
+            continue
+        ivs = intervals.get(num, [])
+        if len(ivs) < 2:
+            continue
+        max_gap = max(ivs)
+        avg_gap = sum(ivs) / len(ivs)
+        if max_gap < 5:
+            continue
+        gap_ratio = gap / max_gap if max_gap > 0 else 0.0
+        if gap_ratio > 0.55 and gap > avg_gap * 0.8:
+            # gap_ratio越高越可能回补
+            candidates.append((num, gap_ratio))
+
+    candidates.sort(key=lambda x: -x[1])
+    return [c for c, _ in candidates[:top_n]]
+
+
+def generate_transition_candidates(records: List[FC3DRecord], top_n: int = 15) -> List[Tuple[int, int, int]]:
+    """跨期转移：给定最近一期号码，找历史上同样号码出现后下一期最常跟随的号码。
+
+    先精确匹配（上期号码完全相同），数据不足时降级为组选匹配（数字集相同）。
+    """
+    if len(records) < 5:
+        return []
+
+    last_draw = tuple(records[0].digits)
+    exact_followers: Counter = Counter()
+    group_followers: Counter = Counter()
+    last_set = set(last_draw)
+
+    for i in range(len(records) - 1):
+        prev_num = tuple(records[i + 1].digits)
+        next_num = tuple(records[i].digits)
+        if prev_num == last_draw:
+            exact_followers[next_num] += 1
+        if set(prev_num) == last_set:
+            group_followers[next_num] += 1
+
+    # 优先精确匹配，不够再补组选
+    result = [c for c, _ in exact_followers.most_common(top_n)]
+    if len(result) < top_n:
+        existing = set(result)
+        for c, _ in group_followers.most_common(top_n * 2):
+            if c not in existing and c != last_draw:
+                result.append(c)
+            if len(result) >= top_n:
+                break
+    return result
 
 
 def mmr_select(
@@ -603,7 +689,47 @@ def predict(
             score, explain = evaluate_candidate(cand_tuple, pos_scores, records, sum_target)
             all_scored.append((cand_tuple, score, explain))
 
-    # 强制保留 top-2 马尔可夫候选作为预测的"骨架"，其余 MMR 选择
+    # === 遗漏回补候选：冷号回补信号 ===
+    gap_cands = generate_gap_candidates(records, top_n=50)
+    gap_scored: List[Tuple[Tuple[int, int, int], float, Dict[str, float]]] = []
+    for cand in gap_cands:
+        key = cand
+        if key in seen_candidates:
+            continue
+        seen_candidates.add(key)
+        score, explain = evaluate_candidate(cand, pos_scores, records, sum_target)
+        gap_scored.append((cand, score, explain))
+        all_scored.append((cand, score, explain))
+
+    # === 跨期转移候选：上期号码的跟随规律 ===
+    trans_cands = generate_transition_candidates(records, top_n=15)
+    trans_scored: List[Tuple[Tuple[int, int, int], float, Dict[str, float]]] = []
+    for cand in trans_cands:
+        key = cand
+        if key in seen_candidates:
+            continue
+        seen_candidates.add(key)
+        score, explain = evaluate_candidate(cand, pos_scores, records, sum_target)
+        trans_scored.append((cand, score, explain))
+        all_scored.append((cand, score, explain))
+
+    # === 强制保留：每种信号源至少1个，确保多维度覆盖 ===
+    # 2个马尔可夫 + 1个遗漏回补 + 1个跨期转移 + 1个MMR自由选择
+    forced_indices: List[int] = []
+    forced_sets: List[set] = []
+
+    def _force_add(source_list, count=1):
+        nonlocal forced_indices, forced_sets
+        for item in source_list[:count]:
+            for i, (cand, _, _) in enumerate(all_scored):
+                if cand == item[0] and i not in forced_indices:
+                    forced_indices.append(i)
+                    forced_sets.append(set(cand))
+                    break
+
+    _force_add(markov_scored, 2)
+    _force_add(gap_scored, 1)
+    _force_add(trans_scored, 1)
     markov_scored.sort(key=lambda x: -x[1])
     forced_indices: List[int] = []
     forced_sets: List[set] = []
@@ -617,13 +743,11 @@ def predict(
     cand_list = [s[0] for s in all_scored]
     score_list = [s[1] for s in all_scored]
 
-    # MMR 多样性选择，λ 自适应回退，目标覆盖≥9个数字
-    # 强制包含 top-2 马尔可夫候选
+    # MMR 选择剩余的槽位（5 - 已强制保留数）
     remaining_slots = num - len(forced_indices)
     results = []
     selected_indices: List[int] = list(forced_indices)
 
-    # 先从候选池中移除已强制保留的
     remaining_pool = [i for i in range(len(cand_list)) if i not in forced_indices]
     remaining_cands = [cand_list[i] for i in remaining_pool]
     remaining_scores = [score_list[i] for i in remaining_pool]
@@ -754,7 +878,7 @@ def backtest(records: List[FC3DRecord], cycles: int = 30, num: int = 5, seed: Op
     cycles = min(cycles, len(records) - 1)
     metrics = []
     for i in range(cycles):
-        history = records[i + 1 : i + 121]  # 预测第 i 期时，使用之后最多120期作为历史
+        history = records[i + 1 : i + 201]  # 最多200期历史，平衡统计功效与时效性
         actual = records[i]
         if len(history) < 20:
             continue
