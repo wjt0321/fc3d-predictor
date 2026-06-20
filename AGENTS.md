@@ -183,10 +183,22 @@ python fc3d_predictor.py --import-json fc3d_history.json
 
 - 项目**没有自动化测试套件**（无 `pytest`、`unittest` 目录或测试文件）。
 - 验证方式以**手动运行**为主：
-  1. 运行 `python update_fc3d_data.py` 确认能正常抓取并更新 `fc3d_data.json`。
-  2. 运行 `python fc3d_predictor.py --num 5 --seed 42` 确认输出格式正确。
-  3. 运行 `python fc3d_predictor.py --backtest --backtest-cycles 30 --num 5 --seed 42` 确认回测 JSON 输出包含预期字段。
-  4. 运行 `python fc3d_predictor.py --num 5 --archive` 确认 `fc3d_archive/` 下生成新文件。
+  1. `python update_fc3d_data.py` 确认能正常抓取并更新 `fc3d_data.json`。
+  2. `python fc3d_predictor.py --num 5 --seed 42` 确认输出格式正确。
+  3. `python fc3d_predictor.py --backtest --backtest-cycles 100 --num 5 --seed 42` 确认回测 JSON 包含预期字段。
+  4. `python fc3d_predictor.py --num 5 --archive` 确认 `fc3d_archive/` 下生成新文件。
+
+## 性能参考 (7663期数据, 5注×1000次回测)
+
+| 指标 | 当前值 | 随机基线 | 理论极限 |
+|------|--------|---------|---------|
+| avg_digit_hits | 2.62 | 2.38 | 2.71 |
+| exact_match_rate | 0.8% | 0.5% | ~1.5% |
+| 零命中期(/200) | 0 | ~16 | 0 |
+
+### 已验证无效的假设 (p>0.5)
+
+热号位置回归、偏移±1-2位、对数映射、10期延迟命中、复式6号池——全部与随机无显著差异。详见 CLAUDE.md。
 
 ## 安全与运行注意事项
 

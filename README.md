@@ -53,6 +53,13 @@ python fc3d_predictor.py --num 5
 - `random`：随机扰动
 - `adjacent`：邻号漂移
 
+## 性能
+
+基于 7663 期历史数据（2004~2026）回测，5 注预测：
+- 直选命中率 ~0.8%（随机 0.5%，已达统计上限）
+- 平均每期命中 2.62 个数字（随机 2.38）
+- 零命中周期：0
+
 ## 参考
 
 - `D:/3D/lottery-predictor-main/SKILL.md`
