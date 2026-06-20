@@ -827,6 +827,7 @@ def format_output(
     expert_infos: Dict[str, Dict[str, float]],
     sum_target: Tuple[float, float],
     records: List[FC3DRecord],
+    gap_info: Optional[Dict] = None,
 ) -> str:
     lines = []
     lines.append("=" * 50)
@@ -836,6 +837,11 @@ def format_output(
         lines.append(f"历史数据：共 {len(records)} 期，最新一期 {records[0].period} ({records[0].date}) 开奖 {records[0].as_number()}")
     lines.append(f"和值目标区间：{sum_target[0]:.1f} ~ {sum_target[1]:.1f}")
     lines.append(f"参与专家：{', '.join(expert_infos.keys())}")
+    if gap_info:
+        lines.append(f"直选命中间隔：距上次命中已 {gap_info['current']} 期 "
+                     f"（历史平均 {gap_info['avg']:.0f} 期，最长 {gap_info['max']} 期，"
+                     f"共命中 {gap_info['total_hits']} 次）")
+        lines.append("⚠ 每次开奖独立，间隔不影响本期命中概率（≈0.8%），仅供历史参考")
     lines.append("-" * 50)
     for i, r in enumerate(results, 1):
         explain_str = " | ".join(f"{k}={v:+.2f}" for k, v in r.explain.items())
@@ -959,8 +965,33 @@ def main():
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
 
+    # 计算直选命中间隔统计（快速回测，仅用于展示）
+    gap_info = None
+    if len(records) >= 60:
+        bt_cycles = min(100, len(records) - 1)
+        bt = backtest(records, cycles=bt_cycles, num=args.num, seed=42)
+        exact_gaps = []
+        prev_hit = -1
+        for i, m in enumerate(bt.get("details", [])):
+            if m["exact_match"]:
+                if prev_hit >= 0:
+                    exact_gaps.append(i - prev_hit)
+                prev_hit = i
+        if prev_hit >= 0:
+            current_gap = 0
+            for m in bt["details"]:
+                if m["exact_match"]:
+                    break
+                current_gap += 1
+            gap_info = {
+                "current": current_gap,
+                "avg": sum(exact_gaps) / len(exact_gaps) if exact_gaps else current_gap,
+                "max": max(exact_gaps) if exact_gaps else current_gap,
+                "total_hits": sum(1 for m in bt["details"] if m["exact_match"]),
+            }
+
     results, expert_infos, sum_target = predict(records, num=args.num, weights=weights, seed=args.seed)
-    print(format_output(results, expert_infos, sum_target, records))
+    print(format_output(results, expert_infos, sum_target, records, gap_info))
 
     if args.archive:
         path = archive_prediction(results, records)
