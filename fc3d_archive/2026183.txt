@@ -1,0 +1,8 @@
+period=2026183
+mode=team
+history_count=7690
+ticket1=734|sum=14|span=4|score=4.830
+ticket2=812|sum=11|span=7|score=4.430
+ticket3=556|sum=16|span=1|score=4.320
+ticket4=099|sum=18|span=9|score=3.170
+ticket5=719|sum=17|span=8|score=4.540
