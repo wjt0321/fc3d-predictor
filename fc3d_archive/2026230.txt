@@ -1,5 +1,5 @@
 period=2026230
-generated_at=2026-08-28T16:00:52.605745
+generated_at=2026-08-29T16:00:29.176033
 mode=team
 history_count=7729
 ticket1=556|sum=16|span=1|score=4.322
