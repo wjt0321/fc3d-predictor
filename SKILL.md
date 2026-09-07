@@ -8,7 +8,7 @@ description: Use when user asks for 福彩3D预测, 3D推荐号, 福彩3D开奖�
 ## 用途
 
 - 用于福彩3D娱乐预测、趋势分析、历史数据导入、回测和归档
-- 默认团队模式融合 7 位专家（hot/cold/missing/cycle/sum/balanced/random）输出 top N 注 3D 号码
+- 默认 exact 模式融合规则专家与带平滑的三位联合概率输出 top N 注；可用 coverage 模式进行数字覆盖实验
 - 仅供娱乐，不构成任何投注建议
 
 ## 触发场景
@@ -43,7 +43,7 @@ description: Use when user asks for 福彩3D预测, 3D推荐号, 福彩3D开奖�
   - `balanced`：奇偶/大小再平衡
   - `random`：随机扰动
   - `adjacent`：邻号漂移（±1邻号加权跟随）
-- **融合逻辑**：每位专家独立按位打分 → 各自产出 top-3 候选 → 马尔可夫链式法则 P(d1,d2,d3) 生成 top-300 完整3位数 → 历史热号+相似期匹配 → 合并去重 → MMR 多样性选择（λ 自适应回退，强制保留 top-2 马尔可夫候选，确保5注覆盖≥9个不同数字）→ 输出 top N
+- **融合逻辑**：每位专家独立按位打分 → 带时间衰减和加性平滑的联合概率覆盖全部1000个号码 → 多来源候选统一评分 → exact 模式按综合分取 top N，coverage 模式使用 MMR 扩大数字覆盖 → 输出 top N
 - **归档目录**：`fc3d_archive/`，文件名 `YYYYXXX.txt`
 
 ## 当前要点
@@ -54,7 +54,7 @@ description: Use when user asks for 福彩3D预测, 3D推荐号, 福彩3D开奖�
 - 支持 `--seed` 复现实验
 - 支持 `--weight-patch` 加载专家权重补丁
 - 支持 `--backtest` 进行 walk-forward 回测
-- 直选命中率 ~0.8%（随机基线 0.5%），已达统计方法上限
+- 回测输出 exact/coverage 两种模式及理论随机基线；不得把单段历史结果当作固定命中率承诺
 - 仅供娱乐，不构成投注建议
 
 ## 最小命令集
@@ -64,7 +64,8 @@ description: Use when user asks for 福彩3D预测, 3D推荐号, 福彩3D开奖�
 - 带归档：`python fc3d_predictor.py --num 5 --archive`
 - 指定随机种子：`python fc3d_predictor.py --num 5 --seed 42`
 - 导入历史数据：`python fc3d_predictor.py --import-json fc3d_history.json`
-- 回测：`python fc3d_predictor.py --backtest --backtest-cycles 30 --num 5 --seed 42`
+- 回测：`python fc3d_predictor.py --backtest --backtest-cycles 30 --num 5 --seed 42 --mode exact`
+- 覆盖回测：`python fc3d_predictor.py --backtest --backtest-cycles 30 --num 5 --seed 42 --mode coverage`
 - 加载权重补丁：`python fc3d_predictor.py --num 5 --weight-patch config/fc3d_weight_patch.json`
 
 ## 典型执行路径
@@ -73,7 +74,7 @@ description: Use when user asks for 福彩3D预测, 3D推荐号, 福彩3D开奖�
 - 更新开奖数据：`python update_fc3d_data.py`（默认最近约 500 期）或 `python update_fc3d_data.py --all`（全部历史）
 - 实验复现：加上 `--seed 42`
 - 数据导入：准备 JSON 文件后运行 `--import-json`
-- 效果验证：运行 `--backtest --backtest-cycles 30 --num 5`
+- 效果验证：分别运行 `--mode exact` 与 `--mode coverage`，同时比较 `random_baseline` 和 `avg_coverage_size`
 - 结果保存：加上 `--archive` 写入 `fc3d_archive/`
 
 ## 运行约束
@@ -106,7 +107,7 @@ description: Use when user asks for 福彩3D预测, 3D推荐号, 福彩3D开奖�
 
 ### Example 3
 - 用户：“跑一下福彩3D回测，看看命中情况。”
-- 应触发：运行 `python fc3d_predictor.py --backtest --backtest-cycles 30 --num 5 --seed 42`，关注 `avg_digit_hits`、`exact_match_rate`、`group_match_rate`。
+- 应触发：运行 `python fc3d_predictor.py --backtest --backtest-cycles 30 --num 5 --seed 42 --mode exact`，关注 `exact_match_rate`、`group_match_rate`、`position_hit_rate`、`avg_coverage_size`，并与 `random_baseline` 对照；需要数字覆盖实验时改用 `--mode coverage`。
 
 ### Example 4
 - 用户：“把 3D 预测结果归档。”
@@ -149,7 +150,7 @@ description: Use when user asks for 福彩3D预测, 3D推荐号, 福彩3D开奖�
     "cycle": 0.7,
     "sum": 1.1,
     "balanced": 0.9,
-    "random": 0.2
+    "random": 0.0
   }
 }
 ```

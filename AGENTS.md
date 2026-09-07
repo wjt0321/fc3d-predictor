@@ -5,7 +5,7 @@
 
 ## 项目概述
 
-本项目是一个轻量级的**福彩3D娱乐预测器**，基于历史开奖数据，使用 7 位规则型专家（hot/cold/missing/cycle/sum/balanced/random）按位打分、加权聚合，输出 top N 注 3D 号码推荐。
+本项目是一个轻量级的**福彩3D娱乐预测器**，基于历史开奖数据，使用默认关闭随机专家的规则型专家按位打分，并结合带平滑的三位联合概率，输出 exact 或 coverage 模式下的 top N 注 3D 号码推荐。
 
 - **用途**：仅供娱乐，不构成任何投注建议。
 - **定位**：参考 `D:/3D/lottery-predictor-main`（双色球预测器）的多专家团队 + 历史回测 + 权重补丁设计，针对福彩3D（3 位数字 0-9）进行简化实现。
@@ -50,12 +50,12 @@
 - **统计工具**：`digit_position_frequency`、`digit_overall_frequency`、`missing_gaps`、`normalize_scores`
 - **专家实现**：`hot_expert`、`cold_expert`、`missing_expert`、`cycle_expert`、`sum_expert`、`balanced_expert`、`random_expert`、`adjacent_expert`
 - **专家注册表**：`EXPERTS` 字典、`DEFAULT_EXPERT_WEIGHTS`
-- **融合与候选生成**：`aggregate_scores`、`generate_candidates`
-- **多样性选择**：`mmr_select`（MMR 自适应 λ，确保≥7个不同数字覆盖）
-- **候选评估**：`evaluate_candidate`（考虑位置分、和值、跨度趋势、形态感知、平衡、重复惩罚）
+- **融合与候选生成**：`aggregate_scores`、`generate_candidates`、`generate_joint_scores`、`generate_markov_candidates`
+- **多样性选择**：`mmr_select`（仅在 `coverage` 模式使用）
+- **候选评估**：`evaluate_candidate`（联合概率、位置分、和值、跨度趋势、形态感知、平衡、重复惩罚）
 - **主预测逻辑**：`predict`
 - **输出与归档**：`format_output`、`archive_prediction`
-- **回测**：`backtest`（walk-forward，统计 `avg_digit_hits`、`exact_match_rate`、`group_match_rate`）
+- **回测**：`backtest`（walk-forward，统计直选、组选、位置命中、数字覆盖，并给出理论随机基线）
 - **权重补丁解析**：`parse_weight_patch`
 - **CLI 入口**：`main`
 
@@ -96,6 +96,8 @@ python fc3d_predictor.py --num 5 --weight-patch config/fc3d_weight_patch.json
 
 # 预测并归档
 python fc3d_predictor.py --num 5 --archive
+python fc3d_predictor.py --num 5 --mode exact
+python fc3d_predictor.py --num 5 --mode coverage
 ```
 
 ### 回测
@@ -188,13 +190,13 @@ python fc3d_predictor.py --import-json fc3d_history.json
   3. `python fc3d_predictor.py --backtest --backtest-cycles 100 --num 5 --seed 42` 确认回测 JSON 包含预期字段。
   4. `python fc3d_predictor.py --num 5 --archive` 确认 `fc3d_archive/` 下生成新文件。
 
-## 性能参考 (7663期数据, 5注×1000次回测)
+## 性能参考
 
-| 指标 | 当前值 | 随机基线 | 理论极限 |
-|------|--------|---------|---------|
-| avg_digit_hits | 2.62 | 2.38 | 2.71 |
-| exact_match_rate | 0.8% | 0.5% | ~1.5% |
-| 零命中期(/200) | 0 | ~16 | 0 |
+不把单段历史回测结果写成固定性能承诺。`backtest` 会按模式、注数和时间区间输出实际结果，并同时输出理论随机基线；比较 `avg_digit_hits` 时必须同时比较 `avg_coverage_size`。
+
+- `exact`：联合概率主导，评估重点是 `exact_match_rate` 和 `group_match_rate`。
+- `coverage`：MMR 主导，评估重点是覆盖规模和数字命中，不等价于直选能力。
+- 随机基线按 1000 个等可能号码中无放回抽取 `num` 注计算。
 
 ### 已验证无效的假设 (p>0.5)
 

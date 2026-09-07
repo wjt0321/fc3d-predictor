@@ -40,11 +40,11 @@ fc3d_data.json  (7663期, 2004~2026, records按日期倒序)
   │
   ▼
 fc3d_predictor.py
-  ├─ 8位专家按位打分 (hot/cold/missing/cycle/sum/balanced/random/adjacent)
-  ├─ 马尔可夫链式法则 P(d1)×P(d2|d1)×P(d3|d1,d2) 生成完整3位数候选
-  ├─ 遗漏回补 + 跨期转移 + 历史热号 + 相似期匹配
-  ├─ MMR 多样性选择 (λ自适应，强制保留多信号源)
-  ├─ backtest(): walk-forward 回测
+  ├─ 7位默认专家按位打分 (hot/cold/missing/cycle/sum/balanced/adjacent)
+  ├─ 带时间衰减和加性平滑的联合概率 P(d1)×P(d2|d1)×P(d3|d1,d2)
+  ├─ 多来源候选统一评分
+  ├─ exact 直选优先 / coverage MMR数字覆盖双模式
+  ├─ backtest(): walk-forward 回测 + 理论随机基线
   └─ archive: → fc3d_archive/{下期期号}.txt
 ```
 
@@ -60,7 +60,7 @@ fc3d_predictor.py
 | 6 | 遗漏回补 | 80 | gap_ratio > 0.55 的冷号 |
 | 7 | 跨期转移 | 25 | 上期号码的历史跟随者 |
 
-合并去重后 MMR 选择 5 注，强制保留：2马尔可夫 + 1遗漏 + 1转移，λ 自适应 0.45→0.05，确保≥9数字覆盖。
+候选合并去重后，exact 直接按联合概率和综合分取 top N；coverage 使用 MMR 扩大数字覆盖；不再强制来源配额。
 
 ### 专家接口
 
@@ -73,8 +73,8 @@ def xxx_expert(records: List[FC3DRecord]) -> Tuple[List[Dict[int, float]], Dict[
 
 | 指标 | v1 原始 | v4 当前 | 随机基线 | 理论极限 |
 |------|---------|---------|---------|---------|
-| avg_digit_hits | 1.06 | **2.62** | 2.38 | 2.71 |
-| exact_match_rate | 0% | **0.8%** | 0.5% | ~1.5% |
+| avg_digit_hits | 由模式决定 | 由覆盖规模决定 | 由覆盖规模决定 | 不适合作为直选上限 |
+| exact_match_rate | 按回测输出 | 按注数计算 | 无可靠固定上限 |
 | 零命中期(/200) | ~60 | **0** | ~16 | 0 |
 
 ### 已验证无效的假设 (7663期数据, p>0.5)
@@ -84,7 +84,7 @@ def xxx_expert(records: List[FC3DRecord]) -> Tuple[List[Dict[int, float]], Dict[
 - 对数映射 (0↔5, 1↔9…) → 27.1%，等于随机
 - 10期内延迟命中 → 4.9%，等于随机概率叠加
 - 复式6号池预选 → 22%，等于随机
-- 更多训练数据 (350→7663) → 命中率不变
+- 更多训练数据 (350→7663) → 命中率不稳定，需分时间段评估
 
 ## 关键约定
 

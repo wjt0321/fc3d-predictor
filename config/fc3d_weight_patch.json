@@ -2,6 +2,11 @@
   "expert_weights": {
     "hot": 2.0,
     "cold": 0.1,
-    "random": 0.0
+    "missing": 1.0,
+    "cycle": 0.8,
+    "sum": 0.9,
+    "balanced": 0.8,
+    "random": 0.0,
+    "adjacent": 1.0
   }
 }
