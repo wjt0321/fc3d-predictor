@@ -1,9 +1,9 @@
 period=2026238
-generated_at=2026-09-07T16:00:17.433522
-mode=team
+generated_at=2026-09-08T16:00:19.331324
+mode=exact
 history_count=7734
-ticket1=225|sum=9|span=3|score=4.343
-ticket2=663|sum=15|span=3|score=4.274
-ticket3=941|sum=14|span=8|score=3.884
-ticket4=707|sum=14|span=7|score=3.456
-ticket5=888|sum=24|span=0|score=2.259
+ticket1=631|sum=10|span=5|score=5.008
+ticket2=911|sum=11|span=8|score=4.990
+ticket3=169|sum=16|span=8|score=4.810
+ticket4=233|sum=8|span=1|score=4.779
+ticket5=133|sum=7|span=2|score=4.699
