@@ -1,0 +1,9 @@
+period=2026275
+generated_at=2026-10-16T16:00:12.434475
+mode=exact
+history_count=7777
+ticket1=414|sum=9|span=3|score=5.502
+ticket2=464|sum=14|span=2|score=5.075
+ticket3=411|sum=6|span=3|score=4.971
+ticket4=419|sum=14|span=8|score=4.803
+ticket5=119|sum=11|span=8|score=4.741
