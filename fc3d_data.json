@@ -1,12 +1,21 @@
 {
   "metadata": {
-    "total_records": 7789,
-    "date_range": "2004-01-01 至 2026-10-27",
-    "last_updated": "2026-10-28 16:00:12",
+    "total_records": 7790,
+    "date_range": "2004-01-01 至 2026-10-28",
+    "last_updated": "2026-10-29 16:00:10",
     "source": "eastmoney-real",
     "is_real": true
   },
   "records": [
+    {
+      "period": "2026287",
+      "date": "2026-10-28",
+      "digits": [
+        1,
+        2,
+        1
+      ]
+    },
     {
       "period": "2026286",
       "date": "2026-10-27",
