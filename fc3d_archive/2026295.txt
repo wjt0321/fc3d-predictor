@@ -1,0 +1,9 @@
+period=2026295
+generated_at=2026-11-05T16:01:19.207752
+mode=team
+history_count=7797
+ticket1=556|sum=16|span=1|score=4.497
+ticket2=447|sum=15|span=3|score=4.435
+ticket3=099|sum=18|span=9|score=4.408
+ticket4=881|sum=17|span=7|score=3.961
+ticket5=323|sum=8|span=1|score=3.390
