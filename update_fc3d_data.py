@@ -10,6 +10,8 @@
 import json
 import os
 import re
+import shutil
+import subprocess
 import time
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -22,6 +24,8 @@ DATA_FILE = "fc3d_data.json"
 BASE_URL = "https://caipiao.eastmoney.com/Result/History/fc3d"
 DEFAULT_PAGES = 10  # 默认抓取最近 10 页（约 500 期）
 REQUEST_DELAY = 0.5
+CURL_TIMEOUT = 40  # curl 单次请求超时（秒）
+CURL_COMMANDS = ("curl.exe", "curl")  # Windows 优先 curl.exe，兼容类 Unix 环境的 curl
 
 
 def load_existing_data() -> Dict:
@@ -83,16 +87,70 @@ def parse_page(html_text: str) -> List[Dict]:
 
 
 def fetch_page(page: int, headers: Dict) -> Optional[str]:
-    """获取单页 HTML"""
+    """获取单页 HTML。
+
+    优先使用 requests；若返回空响应（部分站点会按 TLS 指纹拦截 Python 客户端，
+    表现为 HTTP 200 但响应体长度为 0），则自动降级到 curl 传输层重试。
+    """
     url = BASE_URL if page <= 1 else f"{BASE_URL}?page={page}"
     try:
         resp = requests.get(url, headers=headers, timeout=30)
-        if resp.status_code == 200:
+        if resp.status_code == 200 and resp.content:
             return resp.text
-        print(f"   第 {page} 页请求返回 {resp.status_code}")
+        if resp.status_code == 200:
+            print(f"   第 {page} 页 requests 返回空响应，降级 curl 重试")
+        else:
+            print(f"   第 {page} 页请求返回 {resp.status_code}")
     except Exception as e:
         print(f"   第 {page} 页请求失败: {e}")
+
+    return fetch_page_with_curl(url, page, headers)
+
+
+def find_curl() -> Optional[str]:
+    """定位可用的 curl 可执行文件。"""
+    for cmd in CURL_COMMANDS:
+        if shutil.which(cmd):
+            return cmd
     return None
+
+
+def fetch_page_with_curl(url: str, page: int, headers: Dict) -> Optional[str]:
+    """使用 curl 作为传输层抓取页面（requests 被 TLS 指纹拦截时的降级方案）。
+
+    注意：不使用 --compressed，因为部分 Windows 自带 curl 的 libcurl 不支持该选项。
+    """
+    curl = find_curl()
+    if not curl:
+        print(f"   第 {page} 页未找到可用的 curl，跳过")
+        return None
+
+    cmd = [
+        curl,
+        "-s",
+        "--max-time",
+        str(CURL_TIMEOUT),
+        "-A",
+        headers.get("User-Agent", ""),
+        "-e",
+        headers.get("Referer", ""),
+        url,
+    ]
+    try:
+        completed = subprocess.run(cmd, capture_output=True, timeout=CURL_TIMEOUT + 20)
+    except Exception as e:
+        print(f"   第 {page} 页 curl 执行异常: {e}")
+        return None
+
+    if completed.returncode != 0:
+        print(f"   第 {page} 页 curl 返回码 {completed.returncode}")
+        return None
+
+    html = completed.stdout.decode("utf-8", errors="replace")
+    if not html.strip():
+        print(f"   第 {page} 页 curl 返回空响应")
+        return None
+    return html
 
 
 def fetch_all_records(max_pages: int = DEFAULT_PAGES) -> List[Dict]:

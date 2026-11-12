@@ -64,8 +64,23 @@
 - `load_existing_data` / `save_data`：本地数据读写
 - `parse_page`：HTML 表格解析
 - `fetch_page` / `fetch_all_records`：分页抓取
+  - `fetch_page` 优先用 `requests`；遇到**空响应**（HTTP 200 但响应体长度为 0）自动降级到 curl
+  - `fetch_page_with_curl` / `find_curl`：curl 传输层降级实现
 - `merge_records`：按 `period` 增量去重合并
 - `main`：CLI 入口
+
+### 双传输层降级（2026-11-13 新增）
+
+东方财富网会对 Python 的 TLS 指纹做拦截，表现为 `requests` 恒返回 **HTTP 200 + 0 字节响应体**，而同一 URL 用 `curl.exe` 可正常取得完整 HTML（实测约 77KB）。因此数据更新采用双传输层：
+
+1. **首选 `requests`** —— 行为与原实现一致
+2. **降级 `curl`** —— `requests` 返回空响应或异常时，自动改用 `curl.exe` 重试同一 URL
+   - `find_curl()` 按 `curl.exe` → `curl` 顺序在 PATH 中查找，找不到时安全返回 `None`（不抛异常）
+   - **不使用 `--compressed`**：部分 Windows 自带 curl 的 libcurl 不支持该选项，会以返回码 2 直接失败
+   - 请求头与 `requests` 保持一致（同样的 User-Agent / Referer）
+3. 两条路径都失败时，该页返回 `None`，抓取循环按原有逻辑终止
+
+判定空响应的条件是 `resp.status_code == 200 and not resp.content`，而非仅看状态码。
 
 ## 常用命令
 
@@ -204,6 +219,7 @@ python fc3d_predictor.py --import-json fc3d_history.json
 
 - **仅供娱乐**：所有输出必须附带"仅供娱乐，不构成投注建议"的提示。不得向用户承诺中奖。
 - **网络抓取**：`update_fc3d_data.py` 访问东方财富网（`caipiao.eastmoney.com`），请遵守目标网站的 robots 协议与访问频率，避免频繁抓取。
+- **双传输层**：Python 的 TLS 指纹可能被目标站点拦截（表现为 200 + 空响应体），脚本已内置 curl 降级通道；排查抓取问题时先确认走的是哪条传输层。
 - **数据依赖**：运行预测前需确保 `fc3d_data.json` 存在，或先使用 `--import-json` 导入。
 - **数据不足警告**：历史数据少于 30 期时，脚本会输出警告但不会阻断执行。
 - **无外部服务依赖**：除数据更新脚本的 HTTP 请求外，预测逻辑完全离线运行。
